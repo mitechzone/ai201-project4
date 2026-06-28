@@ -6,8 +6,8 @@ Thresholds match planning.md (asymmetric, biased against false positives):
   0.35 - 0.70  uncertain
   > 0.70       likely_ai
 
-Milestone 3 note: confidence is provisional here (the LLM score alone). The weighted
-combine with stylometry arrives in M4, and the finalized transparency-label text in M5.
+`confidence` is the weighted combine of the two signals (see scoring.combine_confidence),
+and each band maps to one finalized transparency label below.
 """
 
 HUMAN_MAX = 0.35   # confidence < HUMAN_MAX -> likely_human
@@ -21,12 +21,21 @@ def combine_confidence(llm_score, stylo_score):
     """Combine the two signals into the AI-likelihood confidence (0..1)."""
     return round(W_LLM * llm_score + W_STYLO * stylo_score, 4)
 
-# Provisional labels for M3 so /submit returns something readable.
-# Replaced by the finalized transparency-label text in M5.
-_PROVISIONAL_LABELS = {
-    "likely_human": "Likely human-written (provisional label)",
-    "uncertain": "Inconclusive (provisional label)",
-    "likely_ai": "Likely AI-generated (provisional label)",
+# Finalized transparency-label text (verbatim from planning.md, Transparency Labels).
+_LABELS = {
+    "likely_ai": (
+        "🤖 Likely AI-generated. Our analysis suggests this text was probably produced "
+        "with significant help from an AI writing tool. This is an automated estimate, "
+        "not a certainty. If you wrote it yourself, you can appeal."
+    ),
+    "uncertain": (
+        "❓ Inconclusive. Human writing like an AI, or AI writing like a human? "
+        "You've got us, no verdict on this one."
+    ),
+    "likely_human": (
+        "✍️ Likely human-written. Our analysis found no strong signs of AI generation "
+        "in this text."
+    ),
 }
 
 
@@ -40,4 +49,4 @@ def band(confidence):
 
 
 def label_for(attribution):
-    return _PROVISIONAL_LABELS[attribution]
+    return _LABELS[attribution]

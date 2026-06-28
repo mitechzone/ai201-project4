@@ -81,6 +81,44 @@ def record_classification(content_id, creator_id, text, attribution,
         )
 
 
+def get_content(content_id):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM content WHERE content_id = ?", (content_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def record_appeal(content_id, creator_reasoning, evidence_url=None):
+    """Flip the content's status to under_review and append an `appeal` audit entry.
+
+    The appeal entry copies the original classification fields (attribution, scores) so it
+    sits beside the original `classification` row for the same content_id in the log.
+    Returns the content dict, or None if the content_id is unknown.
+    """
+    ts = utcnow()
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM content WHERE content_id = ?", (content_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        c = dict(row)
+        conn.execute(
+            "UPDATE content SET status='under_review', updated_at=? WHERE content_id=?",
+            (ts, content_id),
+        )
+        conn.execute(
+            """INSERT INTO audit_log (content_id, creator_id, timestamp, event,
+                   attribution, confidence, llm_score, stylo_score, status,
+                   appeal_reasoning, appeal_evidence_url)
+               VALUES (?, ?, ?, 'appeal', ?, ?, ?, ?, 'under_review', ?, ?)""",
+            (content_id, c["creator_id"], ts, c["attribution"], c["confidence"],
+             c["llm_score"], c["stylo_score"], creator_reasoning, evidence_url),
+        )
+    return c
+
+
 def get_log(limit=50):
     """Most recent audit entries first, as a list of plain dicts."""
     with get_conn() as conn:
