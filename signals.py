@@ -10,8 +10,10 @@ full one. Defaults match planning.md:
 """
 
 import os
+import re
 import json
 import logging
+import statistics
 
 from groq import Groq
 
@@ -87,6 +89,76 @@ def signal_llm(text, client=None, model=None):
             "reason": "Classifier unavailable; defaulted to uncertain.",
             "model": None,
         }
+
+
+def _words(text):
+    return re.findall(r"[A-Za-z']+", text.lower())
+
+
+def _sentences(text):
+    return [s.strip() for s in re.split(r"[.!?]+", text) if s.strip()]
+
+
+def _lean_low(value, ai_at, human_at):
+    """Map a metric to a 0-1 AI-leaning sub-score where a LOW value means AI.
+
+    value <= ai_at -> 1.0 (AI); value >= human_at -> 0.0 (human); linear between.
+    """
+    if human_at == ai_at:
+        return 0.5
+    return max(0.0, min(1.0, (human_at - value) / (human_at - ai_at)))
+
+
+# Reference windows (provisional, tuned in M4). Each maps a metric to "how AI-like".
+_STD_AI, _STD_HUMAN = 3.0, 9.0      # words-per-sentence stdev: uniform -> AI
+_TTR_AI, _TTR_HUMAN = 0.55, 0.80    # type-token ratio: repetitive -> AI
+_PUNC_AI, _PUNC_HUMAN = 0.05, 0.60  # expressive marks/sentence: flat -> AI
+
+# Sub-signal weights inside stylometry (sum to 1). TTR is down-weighted because the
+# type-token ratio barely discriminates on short submissions (it saturates high), so it
+# stays a light tie-breaker for genuinely repetitive text rather than an equal vote.
+_W_VAR, _W_TTR, _W_PUNC = 0.375, 0.25, 0.375
+
+_MIN_WORDS = 25  # below this, stylometry is unreliable
+
+
+def signal_stylometry(text):
+    """Structural signal. Returns {"stylo_score": 0-1, "metrics": {...}}.
+
+    stylo_score is the equal average of three AI-leaning sub-scores. Too-short text
+    returns a neutral 0.5 so an unreliable structural read cannot swing the verdict.
+    """
+    words = _words(text)
+    sentences = _sentences(text)
+    n_words = len(words)
+
+    if n_words < _MIN_WORDS or len(sentences) < 2:
+        return {"stylo_score": 0.5,
+                "metrics": {"note": "too short for reliable stylometry"}}
+
+    # 1. Sentence-length uniformity: low stdev of words-per-sentence -> AI.
+    lengths = [len(_words(s)) for s in sentences]
+    std = statistics.pstdev(lengths)
+    sub_var = _lean_low(std, _STD_AI, _STD_HUMAN)
+
+    # 2. Lexical diversity: low type-token ratio -> AI.
+    ttr = len(set(words)) / n_words
+    sub_ttr = _lean_low(ttr, _TTR_AI, _TTR_HUMAN)
+
+    # 3. Expressive punctuation: few !?;: and ellipses per sentence -> AI.
+    expressive = len(re.findall(r"[!?;:]", text)) + len(re.findall(r"\.\.\.|…", text))
+    punc_rate = expressive / len(sentences)
+    sub_punc = _lean_low(punc_rate, _PUNC_AI, _PUNC_HUMAN)
+
+    stylo_score = round(_W_VAR * sub_var + _W_TTR * sub_ttr + _W_PUNC * sub_punc, 4)
+    return {
+        "stylo_score": stylo_score,
+        "metrics": {
+            "sentence_len_std": round(std, 2), "sub_var": round(sub_var, 3),
+            "type_token_ratio": round(ttr, 3), "sub_ttr": round(sub_ttr, 3),
+            "expressive_per_sentence": round(punc_rate, 3), "sub_punc": round(sub_punc, 3),
+        },
+    }
 
 
 if __name__ == "__main__":

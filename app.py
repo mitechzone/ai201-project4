@@ -36,14 +36,16 @@ def submit():
     sig = signals.signal_llm(text)
     llm_score = sig["llm_score"]
 
-    # M3: single signal, so confidence is provisional (= llm_score). M4 combines stylometry.
-    confidence = round(llm_score, 4)
+    stylo = signals.signal_stylometry(text)
+    stylo_score = stylo["stylo_score"]
+
+    confidence = scoring.combine_confidence(llm_score, stylo_score)
     attribution = scoring.band(confidence)
     label = scoring.label_for(attribution)
 
     db.record_classification(
         content_id, creator_id, text, attribution,
-        confidence, llm_score, None, label,
+        confidence, llm_score, stylo_score, label,
     )
 
     return jsonify({
@@ -51,7 +53,7 @@ def submit():
         "creator_id": creator_id,
         "attribution": attribution,
         "confidence": confidence,
-        "signals": {"llm_score": llm_score, "stylo_score": None},
+        "signals": {"llm_score": llm_score, "stylo_score": stylo_score},
         "reason": sig["reason"],
         "label": label,
         "status": "classified",
