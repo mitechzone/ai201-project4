@@ -49,7 +49,7 @@ flowchart TD
 
 ## Detection signals
 
-The pipeline uses two genuinely independent signals, one semantic and one structural, so a weakness in one is covered by the other. Both individual scores are returned alongside the combined confidence.
+The pipeline uses two genuinely independent signal types, one semantic and one structural, so a weakness in one is covered by the other. The structural type is itself three signals (sentence-length variance, type-token ratio, and punctuation density), so four signals contribute in total. The LLM score and the combined stylometry score are returned alongside the overall confidence.
 
 ### Signal 1: LLM classifier (semantic)
 
@@ -92,7 +92,7 @@ The bands are asymmetric on purpose: it takes strong evidence to call something 
 
 **How did I validate it?**
 
-I ran four deliberately chosen inputs (clearly AI, clearly human, formal-human borderline, lightly-edited-AI borderline) and confirmed the clearly-AI and clearly-human cases land in opposite bands while the borderline cases sit near the middle. Both signal scores are printed separately so I can see which one moves the result.
+I ran four deliberately chosen inputs (clearly AI, clearly human, formal-human borderline, lightly-edited-AI borderline) and confirmed the clearly-AI and clearly-human cases land far apart in opposite bands. The borderline cases land closer to the boundary, and as Known limitations describes, the formal-human one can even cross into `likely_ai`, the false positive the appeal path exists to handle. Both signal scores are printed separately so I can see which one moves the result.
 
 **Two real submissions with noticeably different confidence** (Groq `llama-3.3-70b-versatile`):
 
@@ -260,7 +260,7 @@ Writing the signal output shapes, the `0.7/0.3` combine, the `0.35/0.70` thresho
 
 `planning.md` specifies that the three stylometry metrics are averaged equally.
 
-During Milestone 4 testing, I saw that the type-token ratio saturated on short submissions: it read nearly identical for clearly-AI and clearly-human text at these lengths, so an equal third of the vote just added a flat offset and diluted the two metrics that actually discriminate.
+During Milestone 4 testing, I saw that the type-token ratio saturated on short submissions: it was nearly identical for clearly-AI and clearly-human text at these lengths, so an equal third of the vote just added a flat offset and diluted the two metrics that actually discriminate.
 
 I overrode the equal average and down-weighted TTR to a `3:2:3` weighting (`sentence-length variance : TTR : punctuation`), so it stays a light tie-breaker for genuinely repetitive text rather than an equal vote.
 
@@ -274,3 +274,58 @@ I overrode the equal average and down-weighted TTR to a `3:2:3` weighting (`sent
 2. **Building the stylometry signal and confidence scoring**
 
    I gave Claude the Detection Signals (Signal 2) and Confidence Scoring sections plus the diagram, and directed it to implement the stylometry function and the logic that combines both signals. It produced a stylometry signal that averaged its three metrics equally. After testing on short sample texts I saw the type-token ratio saturate, with near-identical scores for AI and human at those lengths, so I **overrode** the equal average and down-weighted TTR to a `3:2:3` weighting, then verified on the four test inputs that the clearly-AI and clearly-human cases still land in opposite bands.
+
+## Stretch features
+
+### Ensemble detection
+
+The detection pipeline is an ensemble of four signals across two types: the semantic LLM classifier, and three structural stylometric signals (sentence-length variance, type-token ratio, and punctuation density). Each is scored separately, then combined by a hierarchical weighted average. The three stylometric signals first combine into `stylo_score` with a 3:2:3 weighting (variance `0.375`, TTR `0.25`, punctuation `0.375`), and that combines with the LLM:
+
+```
+confidence = 0.7 * llm_score + 0.3 * stylo_score
+```
+
+The effective ensemble weights are LLM `0.70`, variance `0.1125`, punctuation `0.1125`, and TTR `0.075`.
+
+**How are conflicts resolved?**
+
+The LLM holds the majority weight because it is the only signal that reads meaning, so no single structural signal can flip its verdict. A structural signal that disagrees with the LLM pulls a borderline result toward Uncertain rather than reversing it, and the asymmetric `0.70` threshold keeps a contested case out of `likely_ai` and favors the human. TTR carries the smallest weight because it saturates on short text.
+
+**Individual signal scores alongside the ensemble result:**
+
+For the high-confidence AI example above, `signal_stylometry` exposes each sub-score:
+
+| Signal | Score | Weight |
+| :--- | :--- | :--- |
+| LLM classifier | 0.800 | 0.70 |
+| Sentence-length variance | 0.594 | 0.1125 |
+| Type-token ratio | 0.000 | 0.075 |
+| Punctuation density | 1.000 | 0.1125 |
+| **Ensemble `confidence`** | **0.7393** | |
+
+As part of this stretch, `/submit` now also returns an additive `ensemble_signals` field exposing these individual scores on every request. The required `signals` field (`llm_score`, `stylo_score`) is unchanged; this is extra:
+
+```json
+"ensemble_signals": {
+  "llm": 0.8,
+  "stylometry_variance": 0.594,
+  "stylometry_type_token_ratio": 0.0,
+  "stylometry_punctuation": 1.0
+}
+```
+
+### Analytics dashboard
+
+A read-only `GET /analytics` endpoint aggregates the existing audit log into a metrics summary.
+
+The view reports three metrics: the detection pattern (the share of each verdict), the appeal rate (appeals divided by classifications), and the average confidence across classifications. Captured from the audit log shown above:
+
+```json
+{
+  "total_classifications": 3,
+  "total_appeals": 1,
+  "detection_pattern": { "likely_ai": 0.6667, "uncertain": 0.0, "likely_human": 0.3333 },
+  "appeal_rate": 0.3333,
+  "average_confidence": 0.5806
+}
+```

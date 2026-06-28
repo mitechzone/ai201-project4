@@ -160,3 +160,27 @@ I will verify that the generated scoring uses the weights and the thresholds exa
 I will give the Transparency Labels and Appeals Workflow sections plus the diagram, and ask for the label-generation function (band to label text) and the `POST /appeal` endpoint.
 
 I will verify by having the tool emit all three label variants and confirming the text matches this document, then confirm an appeal flips status to `under_review` and logs alongside the original entry.
+
+## Stretch Features
+
+### Ensemble detection
+
+The pipeline already combines more than two distinct signals, so it is an ensemble. The LLM classifier is one signal, and stylometry is three independent structural signals, sentence-length variance, type-token ratio, and punctuation density, each scored separately before they combine.
+
+The signals combine by a hierarchical weighted average. The three stylometric signals first combine into `stylo_score` with a 3:2:3 weighting (variance `0.375`, TTR `0.25`, punctuation `0.375`), then `stylo_score` combines with the LLM:
+
+`confidence = 0.7 * llm_score + 0.3 * stylo_score`
+
+so the effective ensemble weights are LLM `0.70`, variance `0.1125`, punctuation `0.1125`, and TTR `0.075`.
+
+Conflicts are resolved by weight and by the asymmetric bands. The LLM holds the majority weight because it is the only signal that reads meaning, so no single structural signal can flip its verdict. A structural signal that disagrees with the LLM pulls a borderline result toward Uncertain rather than reversing it, and the `0.70` threshold keeps a contested case out of `likely_ai` and favors the human. TTR carries the smallest weight because it saturates on short text and is the least reliable of the three.
+
+Each signal is scored separately (`llm_score` and the three stylometric sub-scores in `signal_stylometry`). As part of this stretch, `/submit` exposes them in an additive `ensemble_signals` field, and the README shows the full breakdown alongside the combined `confidence`.
+
+### Analytics dashboard
+
+A read-only `GET /analytics` endpoint that aggregates the existing `audit_log` and returns a JSON summary with three metrics:
+
+1. **Detection pattern**: the share of `likely_ai`, `uncertain`, and `likely_human` verdicts across all classifications.
+2. **Appeal rate**: appeals divided by classifications.
+3. **Average confidence**: the mean confidence across all classifications.

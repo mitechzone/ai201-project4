@@ -126,3 +126,35 @@ def get_log(limit=50):
             "SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_analytics():
+    """Stretch (analytics dashboard): aggregate the audit log into a metrics summary.
+
+    Read-only over the existing audit_log; no schema change, no effect on /submit.
+    """
+    with get_conn() as conn:
+        classifications = conn.execute(
+            "SELECT attribution, confidence FROM audit_log WHERE event = 'classification'"
+        ).fetchall()
+        appeals = conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE event = 'appeal'"
+        ).fetchone()[0]
+
+    n = len(classifications)
+    if n == 0:
+        return {"total_classifications": 0, "total_appeals": appeals,
+                "detection_pattern": {}, "appeal_rate": 0.0, "average_confidence": None}
+
+    bands = ("likely_ai", "uncertain", "likely_human")
+    detection_pattern = {
+        b: round(sum(1 for r in classifications if r["attribution"] == b) / n, 4)
+        for b in bands
+    }
+    return {
+        "total_classifications": n,
+        "total_appeals": appeals,
+        "detection_pattern": detection_pattern,            # share of each verdict
+        "appeal_rate": round(appeals / n, 4),
+        "average_confidence": round(sum(r["confidence"] for r in classifications) / n, 4),
+    }

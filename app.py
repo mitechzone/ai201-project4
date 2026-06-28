@@ -59,6 +59,7 @@ def submit():
 
     stylo = signals.signal_stylometry(text)
     stylo_score = stylo["stylo_score"]
+    stylo_metrics = stylo.get("metrics", {})
 
     confidence = scoring.combine_confidence(llm_score, stylo_score)
     attribution = scoring.band(confidence)
@@ -78,6 +79,14 @@ def submit():
         "reason": sig["reason"],
         "label": label,
         "status": "classified",
+        # Stretch (ensemble detection): expose each individual signal score behind the
+        # combined confidence. The required "signals" field above is unchanged; this is additive.
+        "ensemble_signals": {
+            "llm": llm_score,
+            "stylometry_variance": stylo_metrics.get("sub_var"),
+            "stylometry_type_token_ratio": stylo_metrics.get("sub_ttr"),
+            "stylometry_punctuation": stylo_metrics.get("sub_punc"),
+        },
     })
 
 
@@ -108,6 +117,12 @@ def appeal():
 def log():
     limit = request.args.get("limit", default=50, type=int)
     return jsonify({"entries": db.get_log(limit)})
+
+
+# Stretch (analytics dashboard): read-only metrics view over the audit log.
+@app.route("/analytics", methods=["GET"])
+def analytics():
+    return jsonify(db.get_analytics())
 
 
 if __name__ == "__main__":
